@@ -18,6 +18,7 @@
 // If the residue has the interaction type, the corresponding bit in the interaction fingerprint is set to 1.
 
 // The interaction fingerprint is then printed to the console.
+// The parameters for the interactions come from the ProLIF paper https://jcheminf.biomedcentral.com/articles/10.1186/s13321-021-00548-6 by Cédric Bouysset and Sébastien Fiorucci.
 
 
 #include <iostream>
