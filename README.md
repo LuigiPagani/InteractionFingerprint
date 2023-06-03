@@ -36,4 +36,3 @@ The parameters for the interaction types used in this code are based on the ProL
 
 - [ProLIF: An extended encoding for molecular interactions with protein-ligand fingerprints](https://jcheminf.biomedcentral.com/articles/10.1186/s13321-021-00548-6) (Cédric Bouysset and Sébastien Fiorucci, Journal of Cheminformatics, 2021)
 
-Please cite the above paper if you use or reference the interaction fingerprint parameters in your work.
