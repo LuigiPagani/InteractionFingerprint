@@ -37,6 +37,8 @@ using namespace RDKit;
 using namespace RDGeom;
 using namespace RDKit;
 using namespace RDGeom;
+#include <omp.h>
+
 // Define the interaction types and their SMARTS patterns
 struct InteractionType {
     std::string name;
@@ -62,41 +64,52 @@ std::vector<InteractionType> interactionTypes = {
         {"MetalDonor", "[Ca,Cd,Co,Cu,Fe,Mg,Mn,Ni,Zn]", "[O,N;-1;!+1]", 2.8, 0.0, 0.0},
         {"Hydrophobic", "[#6,#16,F,Cl,Br,I,At;+0]", "[#6,#16,F,Cl,Br,I,At;+0]", 4.5, 0.0, 0.0}
 };
+
+Point3D computeRingCentroid(const ROMol& mol, const MatchVectType& match) {
+    Point3D centroid(0, 0, 0);
+    int atomCount = 0;
+    for (const auto& pair : match) {
+        Point3D pos = mol.getConformer().getAtomPos(pair.second);
+        centroid += pos;
+        atomCount++;
+    }
+    centroid /= static_cast<double>(atomCount);
+    return centroid;
+}
+
 bool checkInteraction(const InteractionType& interaction, const ROMol& ligand, const ROMol& residue) {
-    // Find substructures in the ligand and residue
     std::vector<MatchVectType> ligandMatches, residueMatches;
     ROMol* ligandQuery = SmartsToMol(interaction.ligandSmarts);
     ROMol* residueQuery = SmartsToMol(interaction.proteinSmarts);
     SubstructMatch(ligand, *ligandQuery, ligandMatches);
     SubstructMatch(residue, *residueQuery, residueMatches);
-    // Check geometric constraints for each combination of substructures
     for (const auto& ligandMatch : ligandMatches) {
         for (const auto& residueMatch : residueMatches) {
-            Point3D ligandPos = ligand.getConformer().getAtomPos(ligandMatch[0].second);
-            Point3D residuePos = residue.getConformer().getAtomPos(residueMatch[0].second);
-            double distance = (ligandPos - residuePos).length();
-            if (distance <= interaction.maxDistance) {
-                if (interaction.minAngle == 0.0 && interaction.maxAngle == 0.0) {
-                    return true;
-                } else {
-                    Point3D ligandDir = ligand.getConformer().getAtomPos(ligandMatch[0].first) - ligandPos;
-                    Point3D residueDir = residue.getConformer().getAtomPos(residueMatch[0].first) - residuePos;
-                    double angle = ligandDir.angleTo(residueDir) * 180.0 / M_PI;
-                    if (angle >= interaction.minAngle && angle <= interaction.maxAngle) {
-                        return true;
-                    }
+            Point3D ligandPos, residuePos;
+            if (interaction.name == "PiStacking" || interaction.name == "CationPi") {
+                ligandPos = computeRingCentroid(ligand, ligandMatch);
+                residuePos = computeRingCentroid(residue, residueMatch);
+            } else {
+                ligandPos = ligand.getConformer().getAtomPos(ligandMatch[0].second);
+                residuePos = residue.getConformer().getAtomPos(residueMatch[0].second);
+            }
                 }
             }
-        }
-    }
     return false;
 }
+
 ExplicitBitVect computeInteractionFingerprint(const ROMol& protein, const ROMol& ligand) {
     // Break down the protein into residues
     std::vector<boost::shared_ptr<ROMol>> residues = MolOps::getMolFrags(protein); // Change the type here
+
+    // Initialize the interaction fingerprint
+    ExplicitBitVect fp(interactionTypes.size() * residues.size(), false);
+
     // Find residues close enough to the ligand
     std::vector<boost::shared_ptr<ROMol>> closeResidues;
-    for (const auto& residue: residues) {
+#pragma omp parallel for
+    for (int i = 0; i < residues.size(); ++i) {
+        const auto& residue = residues[i];
         bool isClose = false;
         for (const auto& proteinAtom : residue->atoms()) {
             for (const auto& ligandAtom : ligand.atoms()) {
@@ -109,18 +122,20 @@ ExplicitBitVect computeInteractionFingerprint(const ROMol& protein, const ROMol&
                 }
             }
             if (isClose) {
+#pragma omp critical
                 closeResidues.push_back(residue);
                 break;
             }
         }
     }
-    // Initialize the interaction fingerprint
-    ExplicitBitVect fp(interactionTypes.size() * closeResidues.size(), false);
+
     // Compute the interaction fingerprint
-    for (size_t i = 0; i < closeResidues.size(); ++i) {
+#pragma omp parallel for
+    for (int i = 0; i < closeResidues.size(); ++i) {
         for (size_t j = 0; j < interactionTypes.size(); ++j) {
             if (checkInteraction(interactionTypes[j], ligand, *closeResidues[i])) {
-                if (i < closeResidues.size() && j < interactionTypes.size()) {
+#pragma omp critical
+                {
                     if (i < closeResidues.size() && j < interactionTypes.size()) {
                         fp.setBit(i * interactionTypes.size() + j);
                     } else {
@@ -131,6 +146,15 @@ ExplicitBitVect computeInteractionFingerprint(const ROMol& protein, const ROMol&
         }
     }
     return fp;
+}
+
+
+std::vector<int> calculateInteractionCounts(const ExplicitBitVect& fp) {
+    std::vector<int> interactionCounts(interactionTypes.size(), 0);
+    for (unsigned int i = 0; i < fp.getNumBits(); ++i) {
+        interactionCounts[i % interactionTypes.size()] += fp[i] ? 1 : 0;
+    }
+    return interactionCounts;
 }
 
 int main() {
@@ -157,11 +181,17 @@ int main() {
     ExplicitBitVect fp = computeInteractionFingerprint(*protein, *ligand);
 
     // Print the fingerprint
-    std::cout << "Interaction fingerprint: ";
-    for (unsigned int i = 0; i < fp.getNumBits(); ++i) {
-        std::cout << (fp[i] ? "1" : "0");
+
+    std::vector<int> interactionCounts = calculateInteractionCounts(fp);
+
+    // Print the interaction counts
+    std::cout << "Interaction counts: ";
+    for (int count : interactionCounts) {
+        std::cout << count << " ";
     }
     std::cout << std::endl;
+
+    return 0;
 
     return 0;
 }
